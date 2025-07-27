@@ -16,3 +16,5 @@ streamlit
 langchain-community
 arxiv
 faiss-cpu
+matplotlib
+altair

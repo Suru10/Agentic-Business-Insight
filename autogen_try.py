@@ -1,9 +1,8 @@
-# biz_backend.py
 from __future__ import annotations
-import os, json, sqlite3, asyncio
+import os, json, sqlite3, functools
 from typing import AsyncGenerator
-
 import pandas as pd
+
 from autogen_core.tools import FunctionTool
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
@@ -14,121 +13,127 @@ from dotenv import load_dotenv
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
-#####################################################################
-# 0. — helpers
-#####################################################################
+
+# ── schema helper ──────────────────────────────────────────────────
+@functools.lru_cache(maxsize=32)
 def inspect_schema(db_path: str) -> str:
-    """Return a text description of all tables/columns in the DB."""
     conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    schema_desc = []
-    for row in cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-    ).fetchall():
-        tbl = row[0]
+    cur  = conn.cursor()
+    rows = cur.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+    ).fetchall()
+    blocks = []
+    for (tbl,) in rows:
         cols = cur.execute(f"PRAGMA table_info('{tbl}')").fetchall()
-        col_desc = ", ".join(f"{c[1]} ({c[2]})" for c in cols)
-        schema_desc.append(f"- {tbl}: {col_desc}")
+        blocks.append(
+            f"- {tbl}: " + ", ".join(f"{c[1]} ({c[2]})" for c in cols)
+        )
     conn.close()
-    return "\n".join(schema_desc)
+    return "\n".join(blocks) if blocks else "(no user tables found)"
 
 
-#####################################################################
-# 1. — tool: run SQL & return JSON (+ preview markdown)
-#####################################################################
+# ── SQL tool ───────────────────────────────────────────────────────
 def make_sql_tool(db_path: str) -> FunctionTool:
     def run_sql(sql: str) -> str:
-        """Executes SQL and returns:
-        ```
-        {
-          "preview_markdown": "...table in Markdown...",
-          "data_json": "...pandas.to_json(orient='split')..."
-        }
-        ```"""
-        conn = sqlite3.connect(db_path)
-        df = pd.read_sql(sql, conn)
-        conn.close()
-
-        md = df.head(20).to_markdown(index=False)  # small preview
+        with sqlite3.connect(db_path) as conn:
+            df = pd.read_sql(sql, conn)
         return json.dumps(
-            {"preview_markdown": md, "data_json": df.to_json(orient="split")},
+            {
+                "preview_markdown": df.head(20).to_markdown(index=False),
+                "data_json": df.to_json(orient="split"),
+            },
             indent=2,
         )
 
     return FunctionTool(
         run_sql,
         name="run_sql",
-        description=(
-            "Execute an SQL SELECT on the company database. "
-            "Return a JSON dict with fields 'preview_markdown' and 'data_json'."
-        ),
+        description="Run a SELECT and return JSON {preview_markdown, data_json}.",
     )
 
 
-#####################################################################
-# 2. — build the agent team
-#####################################################################
+# ── build 5-agent team ─────────────────────────────────────────────
 def build_team(db_path: str, model="gpt-4o-mini") -> RoundRobinGroupChat:
-    llm = OpenAIChatCompletionClient(model=model, api_key=api_key)
-    schema_txt = inspect_schema(db_path)
-    sql_tool = make_sql_tool(db_path)
+    llm   = OpenAIChatCompletionClient(model=model, api_key=api_key)
+    tool  = make_sql_tool(db_path)
+    schema = inspect_schema(db_path)
 
-    sql_agent = AssistantAgent(
-        name="SQLAgent",
-        description="Writes & executes SQL to satisfy the business question.",
-        system_message=(
-            "You are a senior data engineer.\n"
-            f"Database schema:\n{schema_txt}\n\n"
-            "When you need data, CALL the run_sql tool with a VALID SQL SELECT. "
-            "After getting the results, give a concise textual summary."
-        ),
-        tools=[sql_tool],
+    schema_agent = AssistantAgent(
+        name="SchemaAgent",
         model_client=llm,
+        system_message=(
+            "You are a data architect.  Given the schema below, decide which "
+            "tables/columns are needed and outline a simple data-fetch plan.\n\n"
+            f"SCHEMA:\n{schema}"
+        ),
+    )
+
+    query_agent = AssistantAgent(
+        name="QueryAgent",
+        tools=[tool],
         reflect_on_tool_use=True,
-    )
-
-    insight_agent = AssistantAgent(
-        name="InsightAgent",
-        description="Turns data into insights & chart specs.",
-        system_message=(
-            "You are a business analyst.\n"
-            "You will see SQLAgent outputs that include:\n"
-            "  • A Markdown preview of the data.\n"
-            "  • A JSON string with the full DataFrame.\n\n"
-            "Respond with:\n"
-            "1️⃣ A bullet-point insight summary.\n"
-            "2️⃣ Zero or more charts in **Vega-Lite spec**, each on its own line "
-            "starting with 'CHART_JSON:'.  "
-            "Base charts on the columns available in the data_json.\n"
-            "The Streamlit app will automatically render any CHART_JSON lines."
-        ),
         model_client=llm,
+        system_message=(
+            "You are an SQL expert.  Follow SchemaAgent’s plan.  Call run_sql "
+            "with a single SELECT.  After the tool responds, send one short "
+            "sentence summarising what you fetched."
+        ),
     )
 
-    # Conversation alternates: SQL-Agent → Insight-Agent
+    analysis_agent = AssistantAgent(
+        name="AnalysisAgent",
+        model_client=llm,
+        system_message=(
+            "You are a business analyst.  Interpret the DataFrame provided by "
+            "QueryAgent (arrives as JSON).  Produce concise bullet insights. "
+            "Do NOT create charts or code."
+        ),
+    )
+
+    viz_agent = AssistantAgent(
+        name="VizAgent",
+        model_client=llm,
+        system_message=(
+            "You are a visualisation specialist.  Produce 1–2 Vega-Lite specs. "
+            "Each spec on its own line starting with CHART_JSON: and must use "
+            "inline data values (no URLs)."
+        ),
+    )
+
+    code_agent = AssistantAgent(
+        name="CodeAgent",
+        model_client=llm,
+        system_message=(
+            "You are a Python plotting guru.  Optionally emit runnable code "
+            "on one line starting with CODE_PY: followed by ```python fenced "
+            "code```.  The environment has pandas as pd, altair as alt, "
+            "matplotlib.pyplot as plt, and df_latest (latest DataFrame).  "
+            "Your code must create either `fig` (matplotlib) or `chart` "
+            "(Altair)."
+        ),
+    )
+
     return RoundRobinGroupChat(
-        participants=[sql_agent, insight_agent],
-        max_turns=3,   # usually enough for 1–2 data fetches + analysis
+        participants=[
+            schema_agent, query_agent,
+            analysis_agent, viz_agent, code_agent
+        ],
+        max_turns=10,
     )
 
 
-#####################################################################
-# 3. — orchestrator
-#####################################################################
+# ── orchestrator ───────────────────────────────────────────────────
 async def run_business_query(
     db_path: str,
     user_request: str,
     model="gpt-4o-mini",
 ) -> AsyncGenerator[str, None]:
-    """
-    Stream all messages (role: content) generated by the agent team.
-    """
-    team = build_team(db_path, model=model)
-    task_prompt = (
+    team = build_team(db_path, model)
+    prompt = (
         f"Business question from end-user: {user_request}\n"
-        "Produce clear insights and any useful charts."
+        "Collaborate to deliver insights, charts, and optional code."
     )
-
-    async for msg in team.run_stream(task=task_prompt):
+    async for msg in team.run_stream(task=prompt):
         if isinstance(msg, TextMessage):
             yield f"{msg.source}: {msg.content}"
