@@ -52,3 +52,17 @@ pip install -r requirements.txt
 # 3. Add your API key
 echo "OPENAI_API_KEY=sk-..." > .env
 ```
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).  
+You are free to use, copy, modify, and distribute this software for any purpose,  
+provided you include the original copyright and license notice.
+
+---
+
+## 👤 Author
+
+**Suraj Patel**  
