@@ -39,7 +39,7 @@ An end-to-end, multi-agent Streamlit application that ingests any SQLite busines
 
 ```bash
 # 1. Clone repo
-git clone https://github.com/suru10/agentic-business-dashboard.git
+git clone https://github.com/Suru10/Agentic-Business-Insight.git
 cd agentic-business-dashboard
 
 # 2. Create venv & install
