@@ -39,7 +39,7 @@ An end-to-end, multi-agent Streamlit application that ingests any SQLite busines
 
 ```bash
 # 1. Clone repo
-git clone https://github.com/<your-username>/agentic-business-dashboard.git
+git clone https://github.com/suru10/agentic-business-dashboard.git
 cd agentic-business-dashboard
 
 # 2. Create venv & install
@@ -47,8 +47,7 @@ python -m venv venv
 source venv/bin/activate       # macOS/Linux
 .\venv\Scripts\activate        # Windows
 pip install --upgrade pip
-pip install streamlit autogen-core autogen-agentchat autogen-ext \
-            pandas altair matplotlib python-dotenv
+pip install -r requirements.txt
 
 # 3. Add your API key
 echo "OPENAI_API_KEY=sk-..." > .env
