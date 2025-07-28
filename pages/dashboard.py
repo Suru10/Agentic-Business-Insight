@@ -1,13 +1,13 @@
 import streamlit as st, pandas as pd
 
-st.set_page_config(page_title="📊 Dashboard", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Dashboard", page_icon="📈", layout="wide")
 st.title("📊 Auto-Generated Business Dashboard")
 
 payload = st.session_state.get("dashboard_payload")
 if not payload:
     st.info("Run a query on the Home page first."); st.stop()
 
-st.subheader(f"📝 Question: “{payload['question']}”")
+st.subheader(f"Question: “{payload['question']}”")
 
 # ── insights ───────────────────────────────────────────────────────
 st.markdown("### ✨ Key Insights")
@@ -19,14 +19,14 @@ if payload["frames"]:
     df0 = pd.read_json(payload["frames"][0], orient="split")
     num_cols = df0.select_dtypes("number").columns[:4]
     if not num_cols.empty:
-        st.markdown("### 🔢 Quick KPIs")
+        st.markdown("###Quick KPIs")
         cols = st.columns(len(num_cols))
         for i, col in enumerate(num_cols):
             val = df0[col].sum() if df0[col].sum() > 10 else df0[col].mean()
             cols[i].metric(col.replace("_", " ").title(), f"{val:,.2f}")
 
 # ── charts from CHART_JSON ─────────────────────────────────────────
-st.markdown("### 📈 Visuals")
+st.markdown("###Visuals")
 for spec in payload["charts"]:
     st.vega_lite_chart(spec, use_container_width=True)
 
@@ -38,7 +38,7 @@ for obj in payload.get("charts_exec", []):
         st.pyplot(obj, clear_figure=False)
 
 # ── data explorer ──────────────────────────────────────────────────
-st.markdown("### 🔍 Data Explorer")
+st.markdown("###Data Explorer")
 for i, frame_json in enumerate(payload["frames"], 1):
     df = pd.read_json(frame_json, orient="split")
     with st.expander(f"DataFrame #{i} ({len(df)} rows)"):
